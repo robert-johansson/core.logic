@@ -818,6 +818,53 @@
           true "pldb with fun Lucy"))))
 
 ;; =============================================================================
+;; Zebra puzzle
+
+(defn zebrao [hs]
+  (let [_ (fn [] (lvar))]
+    (all
+      (== (list (_) (_) (list (_) (_) 'milk (_) (_)) (_) (_)) hs)
+      (firsto hs (list 'norwegian (_) (_) (_) (_)))
+      (nexto (list 'norwegian (_) (_) (_) (_)) (list (_) (_) (_) (_) 'blue) hs)
+      (righto (list (_) (_) (_) (_) 'ivory) (list (_) (_) (_) (_) 'green) hs)
+      (membero (list 'englishman (_) (_) (_) 'red) hs)
+      (membero (list (_) 'kools (_) (_) 'yellow) hs)
+      (membero (list 'spaniard (_) (_) 'dog (_)) hs)
+      (membero (list (_) (_) 'coffee (_) 'green) hs)
+      (membero (list 'ukrainian (_) 'tea (_) (_)) hs)
+      (membero (list (_) 'lucky-strikes 'oj (_) (_)) hs)
+      (membero (list 'japanese 'parliaments (_) (_) (_)) hs)
+      (membero (list (_) 'oldgolds (_) 'snails (_)) hs)
+      (nexto (list (_) (_) (_) 'horse (_)) (list (_) 'kools (_) (_) (_)) hs)
+      (nexto (list (_) (_) (_) 'fox (_)) (list (_) 'chesterfields (_) (_) (_)) hs))))
+
+(testing "zebra puzzle"
+  (fn []
+    (let [result (run-nc 1 [q] (zebrao q))
+          solution (first result)
+          houses (vec solution)
+          ;; Extract nationalities and pets from each house
+          nationalities (mapv first houses)
+          pets (mapv #(nth % 3) houses)]
+      (check (= (count result) 1) true "zebra has exactly 1 solution")
+      (check (= (count houses) 5) true "zebra has 5 houses")
+      ;; Verify key constraints
+      (check (= (first nationalities) 'norwegian) true "norwegian in first house")
+      (check (= (nth (nth houses 2) 2) 'milk) true "milk in middle house")
+      (check (= (set nationalities)
+                #{'norwegian 'ukrainian 'englishman 'spaniard 'japanese})
+             true "all nationalities present")
+      (check (= (set (remove symbol? pets))
+                #{})
+             true "all known pets are symbols")
+      ;; The spaniard owns the dog
+      (let [spaniard-house (first (filter #(= (first %) 'spaniard) houses))]
+        (check (= (nth spaniard-house 3) 'dog) true "spaniard owns the dog"))
+      ;; The englishman lives in the red house
+      (let [english-house (first (filter #(= (first %) 'englishman) houses))]
+        (check (= (nth english-house 4) 'red) true "englishman in red house")))))
+
+;; =============================================================================
 ;; Summary
 
 (println (str "\n================================"))
