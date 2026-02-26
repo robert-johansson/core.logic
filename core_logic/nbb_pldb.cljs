@@ -1,0 +1,117 @@
+;   Copyright (c) David Nolen, Rich Hickey, contributors. All rights reserved.
+;   The use and distribution terms for this software are covered by the
+;   Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)
+;   which can be found in the file epl-v10.html at the root of this distribution.
+;   By using this software in any fashion, you are agreeing to be bound by
+;   the terms of this license.
+;   You must not remove this notice, or any other, from this software.
+
+(ns core-logic.nbb-pldb
+  (:require [core-logic.nbb :as l
+             :refer [lvar? -walk* == to-stream failed? empty-s
+                     *logic-dbs*]]))
+
+;; =============================================================================
+;; Database primitives
+
+(def empty-db {})
+
+(defn facts-for [dbs kname]
+  (mapcat #(get-in % [kname ::unindexed]) dbs))
+
+(defn facts-using-index [dbs kname index val]
+  (mapcat #(get-in % [kname index val]) dbs))
+
+(defn rel-key [rel]
+  (if (keyword? rel)
+    rel
+    (:rel-name (meta rel))))
+
+(defn rel-indexes [rel]
+  (:indexes (meta rel)))
+
+(defn contains-lvar? [x]
+  (some lvar? (tree-seq coll? seq x)))
+
+(defn ground? [s term]
+  (not (contains-lvar? (-walk* s term))))
+
+(defn index-for-query [s q indexes]
+  (let [indexable (map #(ground? s %) q)
+        triples  (map vector (range) indexable indexes)]
+    (first
+      (for [[i indexable indexed] triples
+            :when (and indexable indexed)]
+        i))))
+
+;; =============================================================================
+;; Database operations
+
+(defn db-fact [db rel & args]
+  (let [key               (rel-key rel)
+        add-to-set        (fn [current new] (conj (or current #{}) new))
+        db-with-fact      (update-in db [key ::unindexed] #(add-to-set %1 args))
+        indexes-to-update (map vector (rel-indexes rel) (range) args)
+        update-index-fn
+        (fn [db [is-indexed index-num val]]
+          (if is-indexed
+            (update-in db [key index-num val] #(add-to-set %1 args))
+            db))]
+    (reduce update-index-fn db-with-fact indexes-to-update)))
+
+(defn db-retraction [db rel & args]
+  (let [key               (rel-key rel)
+        retract-args      #(disj %1 args)
+        db-without-fact   (update-in db [key ::unindexed] retract-args)
+        indexes-to-update (map vector (rel-indexes rel) (range) args)
+        remove-from-index-fn
+        (fn [db [is-indexed index-num val]]
+          (if is-indexed
+            (update-in db [key index-num val] retract-args)
+            db))]
+    (reduce remove-from-index-fn db-without-fact indexes-to-update)))
+
+(defn db-facts [base-db & facts]
+  (reduce #(apply db-fact %1 %2) base-db facts))
+
+(defn db [& facts]
+  (apply db-facts empty-db facts))
+
+(defn db-retractions [base-db & retractions]
+  (reduce #(apply db-retraction %1 %2) base-db retractions))
+
+;; =============================================================================
+;; Macros
+
+(defn- indexed? [v]
+  (true? (:index (meta v))))
+
+(defmacro with-dbs [dbs & body]
+  `(binding [l/*logic-dbs* (concat l/*logic-dbs* ~dbs)]
+     ~@body))
+
+(defmacro with-db [db & body]
+  `(binding [l/*logic-dbs* (conj l/*logic-dbs* ~db)]
+     ~@body))
+
+(defmacro db-rel [name & args]
+  (let [arity   (count args)
+        kname   (str *ns* "/" name "_" arity)
+        indexes (vec (map indexed? args))]
+    `(def ~name
+       (with-meta
+         (fn [& query#]
+           (fn [subs#]
+             (let [dbs# (:db (:meta-map subs#))
+                   facts#
+                   (if-let [index# (index-for-query
+                                     subs# query# ~indexes)]
+                     (facts-using-index dbs# ~kname index#
+                       (-walk* subs# (nth query# index#)))
+                     (facts-for dbs# ~kname))]
+               (to-stream
+                 (remove failed?
+                   (map (fn [potential#]
+                          ((l/== query# potential#) subs#))
+                     facts#))))))
+         {:rel-name ~kname :indexes ~indexes}))))
