@@ -176,34 +176,47 @@
 
 (defn mplus [a f]
   (cond
-    (fn? a)           (fn [] (mplus (f) a))  ;; Inc case: swap for interleaving
-    (satisfies? IMPlus a) (-mplus a f)
-    :else             (choice a f)))
+    (fn? a)                     (fn [] (mplus (f) a))
+    (instance? Substitutions a) (choice a f)
+    (instance? Choice a)        (choice (:a a) (fn [] (mplus (f) (:f a))))
+    (instance? Fail a)          f
+    :else                       (choice a f)))
 
 (defn take* [x]
   (cond
-    (fn? x)            (lazy-seq (take* (x)))
-    (satisfies? ITake x) (-take* x)
-    :else              (list x)))
+    (fn? x)                     (lazy-seq (take* (x)))
+    (instance? Substitutions x) x
+    (instance? Choice x)        (lazy-seq (cons (:a x) (lazy-seq (take* (:f x)))))
+    (instance? Fail x)          ()
+    :else                       (list x)))
 
 (defn bind [stream g]
   (cond
-    (fn? stream)           (fn [] (bind (stream) g))
-    (satisfies? IBind stream) (-bind stream g)
-    :else                  (g stream)))
+    (fn? stream)                     (fn [] (bind (stream) g))
+    (instance? Substitutions stream) (g stream)
+    (instance? Choice stream)        (let [a (:a stream) f (:f stream)]
+                                       (mplus (g a) (fn [] (bind f g))))
+    (instance? Fail stream)          stream
+    :else                            (g stream)))
 
 ;; IIfA / IIfU wrappers that handle Inc-as-fn
 (defn ifa [b gs c]
   (cond
-    (fn? b)             (fn [] (ifa (b) gs c))
-    (satisfies? IIfA b) (-ifa b gs c)
-    :else               nil))
+    (fn? b)                     (fn [] (ifa (b) gs c))
+    (instance? Substitutions b) (loop [b b gs (seq gs)]
+                                  (if gs (when-let [b ((first gs) b)] (recur b (next gs))) b))
+    (instance? Choice b)        (reduce bind b gs)
+    (instance? Fail b)          (when c (force c))
+    :else                       nil))
 
 (defn ifu [b gs c]
   (cond
-    (fn? b)             (fn [] (ifu (b) gs c))
-    (satisfies? IIfU b) (-ifu b gs c)
-    :else               nil))
+    (fn? b)                     (fn [] (ifu (b) gs c))
+    (instance? Substitutions b) (loop [b b gs (seq gs)]
+                                  (if gs (when-let [b ((first gs) b)] (recur b (next gs))) b))
+    (instance? Choice b)        (reduce bind (:a b) gs)
+    (instance? Fail b)          (when c (force c))
+    :else                       nil))
 
 ;; =============================================================================
 ;; extend-type Substitutions — ISubstitutions, IBind, IMPlus, ITake, IIfA, IIfU
@@ -215,21 +228,25 @@
       (-occurs-check-term v u this)))
 
   (-ext [this u v]
-    (if (and (:occurs-check (:meta-map this))
-             (-occurs-check this u v))
-      the-fail
-      (-ext-no-check this u v)))
+    (let [m (:meta-map this)]
+      (if (and (:occurs-check m)
+               (-occurs-check this u v))
+        the-fail
+        (-ext-no-check this u v))))
 
   (-ext-no-check [this u v]
-    (->Substitutions (assoc (:s this) u v) (:meta-map this)))
+    (let [s (:s this) m (:meta-map this)]
+      (->Substitutions (assoc s u v) m)))
 
   (-walk [this v]
-    (if (lvar? v)
-      (let [rhs (get (:s this) v walk-not-found)]
-        (if (identical? rhs walk-not-found)
-          v
-          (recur this rhs)))
-      v))
+    (let [s (:s this)]
+      (loop [v v]
+        (if (lvar? v)
+          (let [rhs (get s v walk-not-found)]
+            (if (identical? rhs walk-not-found)
+              v
+              (recur rhs)))
+          v))))
 
   (-walk* [this v]
     (let [v (-walk this v)]
@@ -242,12 +259,11 @@
             v (-walk this v)]
         (if (identical? u v)
           this
-          (if (and (lvar? u) (lvar? v) (= u v))
-            this
-            (-unify-terms u v this))))))
+          (-unify-terms u v this)))))
 
   (-reify-lvar-name [this]
-    (symbol (str "_." (count (:s this)))))
+    (let [s (:s this)]
+      (symbol (str "_." (count s)))))
 
   (-reify* [this v]
     (let [v (-walk this v)]
@@ -564,7 +580,7 @@
   default
   (-walk-term [v s]
     (cond
-      (vector? v) (into [] (map #(-walk* s %) v))
+      (vector? v) (mapv #(-walk* s %) v)
       (map? v)    (walk-term-map* v s)
       (sequential? v) (map #(-walk* s %) v)
       :else v)))
@@ -588,7 +604,7 @@
 ;; Substitution helpers
 
 (defn to-s [v]
-  (make-s (into {} (map (fn [[k val]] [k val]) v))))
+  (make-s (into {} v)))
 
 ;; =============================================================================
 ;; Macros — defined inline for nbb/SCI
@@ -820,7 +836,7 @@
     (cond
       (list? p) p
       (map? p) (into {} (map (fn [[k v]] [(p->term k) (p->term v)]) p))
-      (vector? p) (into [] (map p->term p))
+      (vector? p) (mapv p->term p)
       (set? p) (into #{} (map p->term p))
       :else (into (empty p) (map p->term p)))
     :else p))
